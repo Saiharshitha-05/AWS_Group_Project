@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Book {{ movie.title if movie and movie.title else 'Movie' }} - MovieMagic</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/booking.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <header class="booking-header">
+        <div class="container">
+            {% if movie and movie.id %}
+            <a href="{{ url_for('movie_details', movie_id=movie.id) }}" class="back-btn">
+                <i class="fas fa-arrow-left"></i> Back to Movie
+            </a>
+            {% else %}
+            <a href="{{ url_for('dashboard') }}" class="back-btn">
+                <i class="fas fa-arrow-left"></i> Back to Dashboard
+            </a>
+            {% endif %}
+            <h1 class="booking-title">Book Your Tickets</h1>
+        </div>
+    </header>
+
+    <main class="main-content">
+        <div class="container">
+            {% if not movie %}
+            <div class="error-container">
+                <div class="error-icon">
+                    <i class="fas fa-exclamation-triangle"></i>
+                </div>
+                <h2>Movie Not Available</h2>
+                <p>Sorry, the movie you're trying to book is not available or temporarily unavailable.</p>
+                <a href="{{ url_for('dashboard') }}" class="btn btn-primary">
+                    <i class="fas fa-home"></i> Go to Dashboard
+                </a>
+            </div>
+            {% else %}
+            <div class="booking-container">
+                <div class="movie-summary">
+                    <div class="movie-poster">
+                        {% if movie.poster_path %}
+                        <img src="{{ movie.poster_path }}" alt="{{ movie.title if movie.title else 'Movie' }}" loading="lazy">
+                        {% else %}
+                        <div class="poster-placeholder">
+                            <i class="fas fa-film"></i>
+                        </div>
+                        {% endif %}
+                    </div>
+                    <div class="movie-info">
+                        <h2>{{ movie.title if movie.title else 'Unknown Title' }}</h2>
+                        <p class="movie-meta">
+                            <span><i class="fas fa-star"></i> {{ movie.vote_average if movie.vote_average else 'N/A' }}/10</span>
+                            <span>{{ movie.release_date[:4] if movie.release_date else 'N/A' }}</span>
+                        </p>
+                    </div>
+                </div>
+
+                <div class="booking-form-container">
+                    <h3>Booking Details</h3>
+                    <form method="POST" class="booking-form">
+                        {{ form.hidden_tag() }}
+                        
+                        <div class="form-group">
+                            <label for="show_time" class="form-label">
+                                <i class="fas fa-clock"></i> Select Show Time
+                            </label>
+                            {{ form.show_time(class="form-select") }}
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="seat_number" class="form-label">
+                                <i class="fas fa-chair"></i> Seat Number
+                            </label>
+                            {{ form.seat_number(class="form-input", placeholder="e.g., A12, B5, C23") }}
+                            {% if form.seat_number.errors %}
+                                <div class="error-message">
+                                    {% for error in form.seat_number.errors %}
+                                        <small>{{ error }}</small>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        </div>
+                        
+                        <div class="booking-summary">
+                            <h4>Booking Summary</h4>
+                            <div class="summary-item">
+                                <span>Movie:</span>
+                                <span>{{ movie.title if movie.title else 'Unknown' }}</span>
+                            </div>
+                            <div class="summary-item">
+                                <span>Date:</span>
+                                <span>{{ moment().format('MMMM Do YYYY') if moment else 'Today' }}</span>
+                            </div>
+                            <div class="summary-item">
+                                <span>Time:</span>
+                                <span id="selected-time">{{ form.show_time.choices[0][1] if form.show_time.choices else 'N/A' }}</span>
+                            </div>
+                            <div class="summary-item">
+                                <span>Seat:</span>
+                                <span id="selected-seat">Not selected</span>
+                            </div>
+                            <div class="summary-item total">
+                                <span>Total:</span>
+                                <span>$12.99</span>
+                            </div>
+                        </div>
+                        
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary btn-large">
+                                <i class="fas fa-credit-card"></i> Proceed to Payment
+                            </button>
+                            {% if movie and movie.id %}
+                            <a href="{{ url_for('movie_details', movie_id=movie.id) }}" class="btn btn-secondary">
+                                <i class="fas fa-times"></i> Cancel
+                            </a>
+                            {% else %}
+                            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">
+                                <i class="fas fa-times"></i> Cancel
+                            </a>
+                            {% endif %}
+                        </div>
+                    </form>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2024 MovieMagic. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+    <script>
+        // Update booking summary in real-time
+        const showTimeSelect = document.getElementById('show_time');
+        const seatInput = document.getElementById('seat_number');
+        const selectedTimeSpan = document.getElementById('selected-time');
+        const selectedSeatSpan = document.getElementById('selected-seat');
+
+        if (showTimeSelect) {
+            showTimeSelect.addEventListener('change', function() {
+                selectedTimeSpan.textContent = this.value;
+            });
+        }
+
+        if (seatInput) {
+            seatInput.addEventListener('input', function() {
+                selectedSeatSpan.textContent = this.value || 'Not selected';
+            });
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,544 @@
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from flask_wtf import FlaskForm
+from wtforms import StringField, PasswordField, SubmitField, IntegerField, SelectField, TextAreaField
+from wtforms.validators import DataRequired, Length, EqualTo, ValidationError, Regexp
+from werkzeug.security import generate_password_hash, check_password_hash
+import requests
+import qrcode
+import os
+import secrets
+from datetime import datetime, timedelta
+import logging
+import re
+import time
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'your-secret-key-here'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///moviemagic.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+# TMDB API Configuration
+TMDB_API_KEY = 'a7230d20c47f744d4acf29f1ef60b218'
+TMDB_BASE_URL = 'https://api.themoviedb.org/3'
+API_TIMEOUT = 5
+
+# Models
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128))
+    bookings = db.relationship('Booking', backref='user', lazy=True, cascade='all, delete-orphan')
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+class Booking(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    movie_id = db.Column(db.Integer, nullable=False)
+    movie_title = db.Column(db.String(200), nullable=False)
+    show_time = db.Column(db.String(50), nullable=False)
+    seat_number = db.Column(db.String(10), nullable=False)
+    booking_date = db.Column(db.DateTime, default=datetime.utcnow)
+    qr_code_path = db.Column(db.String(200))
+    payment_status = db.Column(db.String(20), default='pending')
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# Forms
+class LoginForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired()])
+    password = PasswordField('Password', validators=[DataRequired()])
+    submit = SubmitField('Login')
+
+class SignupForm(FlaskForm):
+    username = StringField('Username', validators=[
+        DataRequired(), 
+        Length(min=4, max=20, message='Username must be between 4 and 20 characters')
+    ])
+    email = StringField('Email', validators=[DataRequired()])
+    password = PasswordField('Password', validators=[
+        DataRequired(), 
+        Length(min=8, message='Password must be at least 8 characters long'),
+        Regexp(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)', message='Password must contain at least one uppercase letter, one lowercase letter, and one number')
+    ])
+    confirm_password = PasswordField('Confirm Password', validators=[
+        DataRequired(), 
+        EqualTo('password', message='Passwords must match')
+    ])
+    submit = SubmitField('Sign Up')
+
+class BookingForm(FlaskForm):
+    show_time = SelectField('Show Time', choices=[
+        ('10:00 AM', '10:00 AM'),
+        ('1:00 PM', '1:00 PM'),
+        ('4:00 PM', '4:00 PM'),
+        ('7:00 PM', '7:00 PM'),
+        ('10:00 PM', '10:00 PM')
+    ], validators=[DataRequired()])
+    seat_number = StringField('Seat Number', validators=[
+        DataRequired(),
+        Length(max=10, message='Seat number too long')
+    ])
+    submit = SubmitField('Book Now')
+
+# TMDB API Helper Functions
+def get_movie_details(movie_id):
+    """Fetch a single movie from TMDB API with comprehensive error handling."""
+    url = f"{TMDB_BASE_URL}/movie/{movie_id}"
+    params = {
+        'api_key': TMDB_API_KEY,
+        'language': 'en-US'
+    }
+    
+    try:
+        # Use session for better connection reuse
+        session = requests.Session()
+        session.headers.update({'User-Agent': 'MovieMagic/1.0'})
+        
+        response = session.get(url, params=params, timeout=API_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Validate that we got valid movie data
+        if not data or not data.get('id'):
+            logger.warning(f"TMDB API returned invalid data for movie_id: {movie_id}")
+            return None
+        
+        # Build structured movie object
+        poster_path = data.get('poster_path')
+        poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
+        
+        backdrop_path = data.get('backdrop_path')
+        backdrop_url = f"https://image.tmdb.org/t/p/w1280{backdrop_path}" if backdrop_path else None
+        
+        movie = {
+            "id": data.get("id"),
+            "title": data.get("title", "Unknown Title"),
+            "poster_path": poster_url,
+            "backdrop_path": backdrop_url,
+            "vote_average": data.get("vote_average", 0),
+            "rating": data.get("vote_average", 0),
+            "overview": data.get("overview", "No description available."),
+            "release_date": data.get("release_date", ""),
+            "runtime": data.get("runtime", 0),
+            "genres": [genre['name'] for genre in data.get('genres', [])],
+            "production_companies": [company['name'] for company in data.get('production_companies', [])[:3]],
+            "original_language": data.get("original_language", ""),
+            "tagline": data.get("tagline", "")
+        }
+        
+        logger.info(f"Successfully fetched movie: {movie['title']} (ID: {movie_id})")
+        return movie
+        
+    except requests.exceptions.Timeout:
+        logger.error(f"TMDB API timeout for movie_id: {movie_id}")
+        return None
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"TMDB API connection error for movie_id {movie_id}: {str(e)}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"TMDB API error for movie_id {movie_id}: {str(e)}")
+        return None
+    except (KeyError, ValueError) as e:
+        logger.error(f"Data parsing error for movie_id {movie_id}: {str(e)}")
+        return None
+
+def get_movies_from_tmdb(search_query='', category='all', language='all'):
+    """Fetch movies from TMDB API with comprehensive error handling."""
+    if search_query:
+        url = f"{TMDB_BASE_URL}/search/movie"
+        params = {
+            'api_key': TMDB_API_KEY,
+            'query': search_query,
+            'language': 'en-US',
+            'page': 1
+        }
+    else:
+        url = f"{TMDB_BASE_URL}/movie/popular"
+        params = {
+            'api_key': TMDB_API_KEY,
+            'language': 'en-US',
+            'page': 1
+        }
+    
+    try:
+        response = requests.get(url, params=params, timeout=API_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+        movies = []
+        
+        for movie_data in data.get('results', [])[:20]:
+            # Filter by category if specified
+            if category != 'all' and not should_include_movie(movie_data, category):
+                continue
+            
+            # Filter by language if specified
+            if language != 'all' and not should_include_language(movie_data, language):
+                continue
+            
+            # Build structured movie object
+            poster_path = movie_data.get('poster_path')
+            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
+            
+            movies.append({
+                'id': movie_data.get('id'),
+                'title': movie_data.get('title', 'Unknown'),
+                'overview': movie_data.get('overview', ''),
+                'poster_path': poster_url,
+                'release_date': movie_data.get('release_date', ''),
+                'vote_average': movie_data.get('vote_average', 0),
+                'genre_ids': movie_data.get('genre_ids', []),
+                'original_language': movie_data.get('original_language', '')
+            })
+        
+        logger.info(f"Successfully fetched {len(movies)} movies from TMDB")
+        return movies
+        
+    except requests.exceptions.Timeout:
+        logger.error("TMDB API timeout while fetching movies")
+        return []
+    except requests.exceptions.RequestException as e:
+        logger.error(f"TMDB API error while fetching movies: {str(e)}")
+        # If search fails, fallback to popular movies
+        if search_query:
+            return get_movies_from_tmdb('', category, language)
+        return []
+    except (KeyError, ValueError) as e:
+        logger.error(f"Data parsing error while fetching movies: {str(e)}")
+        return []
+
+def should_include_movie(movie, category):
+    """Filter movies by category/genre."""
+    category_mapping = {
+        'action': [28],
+        'romance': [10749],
+        'comedy': [35],
+        'disney': [],
+        'sci-fi': [878]
+    }
+    
+    if category in category_mapping:
+        genre_ids = movie.get('genre_ids', [])
+        return any(genre_id in genre_ids for genre_id in category_mapping[category])
+    return True
+
+def should_include_language(movie, language):
+    """Filter movies by language."""
+    if language == 'english' and movie.get('original_language') == 'en':
+        return True
+    elif language == 'non_english' and movie.get('original_language') != 'en':
+        return True
+    elif language == 'all':
+        return True
+    return False
+
+def generate_qr_code(data, movie_id, user_id):
+    """Generate QR code for booking with error handling."""
+    try:
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(data)
+        qr.make(fit=True)
+        
+        filename = f"qr_{movie_id}_{user_id}_{secrets.token_hex(8)}.png"
+        filepath = os.path.join('static', 'qr_codes', filename)
+        
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        img.save(filepath)
+        
+        return f"qr_codes/{filename}"
+    except Exception as e:
+        logger.error(f"QR code generation error: {str(e)}")
+        return None
+
+# Routes
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    
+    form = LoginForm()
+    if form.validate_on_submit():
+        user = User.query.filter_by(username=form.username.data).first()
+        if user and user.check_password(form.password.data):
+            login_user(user)
+            logger.info(f"User logged in: {user.username}")
+            flash('Login successful!', 'success')
+            return redirect(url_for('dashboard'))
+        else:
+            logger.warning(f"Failed login attempt for username: {form.username.data}")
+            flash('Invalid username or password', 'danger')
+    return render_template('login.html', form=form)
+
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    
+    form = SignupForm()
+    if form.validate_on_submit():
+        # Check if email already exists
+        existing_email = User.query.filter_by(email=form.email.data).first()
+        if existing_email:
+            flash('Email already registered. Please use a different email.', 'danger')
+            logger.warning(f"Signup failed: email {form.email.data} already exists")
+            return render_template('signup.html', form=form)
+        
+        # Check if username already exists
+        existing_username = User.query.filter_by(username=form.username.data).first()
+        if existing_username:
+            flash('Username already taken. Please choose a different username.', 'danger')
+            logger.warning(f"Signup failed: username {form.username.data} already exists")
+            return render_template('signup.html', form=form)
+        
+        try:
+            user = User(username=form.username.data, email=form.email.data)
+            user.set_password(form.password.data)
+            db.session.add(user)
+            db.session.commit()
+            logger.info(f"New user created: {user.username}")
+            flash('Account created successfully! Please login.', 'success')
+            return redirect(url_for('login'))
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Signup error: {str(e)}")
+            flash('An error occurred during signup. Please try again.', 'danger')
+            return render_template('signup.html', form=form)
+    
+    return render_template('signup.html', form=form)
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    # Get search parameters
+    search_query = request.args.get('search', '')
+    category = request.args.get('category', 'all')
+    language = request.args.get('language', 'all')
+    
+    # Get search history from session
+    search_history = session.get('search_history', [])
+    
+    # Add current search to history
+    if search_query and search_query not in search_history:
+        search_history.append(search_query)
+        if len(search_history) > 5:
+            search_history.pop(0)
+        session['search_history'] = search_history
+    
+    # Fetch movies from TMDB - always returns a list, never None
+    movies = get_movies_from_tmdb(search_query, category, language)
+    
+    return render_template('dashboard.html', movies=movies, search_history=search_history)
+
+@app.route('/movie/<int:movie_id>')
+@login_required
+def movie_details(movie_id):
+    movie = get_movie_details(movie_id)
+    
+    if not movie:
+        flash("Movie not found or temporarily unavailable", "danger")
+        return redirect(url_for('dashboard'))
+    
+    return render_template('movie_details.html', movie=movie)
+
+@app.route('/booking/<int:movie_id>', methods=['GET', 'POST'])
+@login_required
+def booking(movie_id):
+    """Handle movie booking with proper error handling and validation."""
+    try:
+        # Get movie with proper error handling
+        movie = get_movie_details(movie_id)
+        
+        # If movie not found, show error and redirect
+        if not movie:
+            flash("Movie not found or temporarily unavailable", "danger")
+            logger.warning(f"Booking attempted for non-existent movie ID: {movie_id} by user: {current_user.username}")
+            return redirect(url_for('dashboard'))
+        
+        form = BookingForm()
+        
+        if form.validate_on_submit():
+            try:
+                # Generate QR code
+                qr_data = f"Movie: {movie.get('title', 'Unknown')}, User: {current_user.username}, Time: {form.show_time.data}, Seat: {form.seat_number.data}"
+                
+                qr_code_path = generate_qr_code(qr_data, movie_id, current_user.id)
+                if not qr_code_path:
+                    flash('Error generating booking code. Please try again.', 'danger')
+                    return render_template('booking.html', movie=movie, form=form)
+                
+                # Save booking
+                booking = Booking(
+                    user_id=current_user.id,
+                    movie_id=movie_id,
+                    movie_title=movie.get('title', 'Unknown'),
+                    show_time=form.show_time.data,
+                    seat_number=form.seat_number.data,
+                    qr_code_path=qr_code_path,
+                    payment_status='pending'
+                )
+                db.session.add(booking)
+                db.session.commit()
+                logger.info(f"Booking created: ID {booking.id} for user {current_user.username}")
+                flash('Booking successful!', 'success')
+                return redirect(url_for('payment', booking_id=booking.id))
+                
+            except Exception as e:
+                db.session.rollback()
+                logger.error(f"Booking save error for movie {movie_id}: {str(e)}")
+                flash('Error saving booking. Please try again.', 'danger')
+                return render_template('booking.html', movie=movie, form=form)
+        
+        return render_template('booking.html', movie=movie, form=form)
+        
+    except Exception as e:
+        logger.error(f"Unhandled exception in booking route for movie {movie_id}: {str(e)}")
+        flash('An unexpected error occurred. Please try again.', 'danger')
+        return redirect(url_for('dashboard'))
+
+@app.route('/payment/<int:booking_id>')
+@login_required
+def payment(booking_id):
+    booking = Booking.query.get_or_404(booking_id)
+    
+    # Security check: ensure user owns this booking
+    if booking.user_id != current_user.id:
+        flash('Unauthorized access', 'danger')
+        return redirect(url_for('dashboard'))
+    
+    # Check if already paid
+    if booking.payment_status == 'paid':
+        flash('This booking has already been paid for.', 'info')
+        return redirect(url_for('confirm_booking', booking_id=booking.id))
+    
+    return render_template('payment.html', booking=booking)
+
+@app.route('/process_payment/<int:booking_id>', methods=['POST'])
+@login_required
+def process_payment(booking_id):
+    booking = Booking.query.get_or_404(booking_id)
+    
+    # Security check
+    if booking.user_id != current_user.id:
+        flash('Unauthorized access', 'danger')
+        return redirect(url_for('dashboard'))
+    
+    # Simulate payment processing
+    try:
+        # In a real app, you would integrate with a payment gateway here
+        booking.payment_status = 'paid'
+        db.session.commit()
+        logger.info(f"Payment processed for booking ID {booking_id}")
+        flash('Payment successful!', 'success')
+        return redirect(url_for('confirm_booking', booking_id=booking.id))
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Payment processing error: {str(e)}")
+        flash('Payment failed. Please try again.', 'danger')
+        return redirect(url_for('payment', booking_id=booking.id))
+
+@app.route('/confirm_booking/<int:booking_id>')
+@login_required
+def confirm_booking(booking_id):
+    booking = Booking.query.get_or_404(booking_id)
+    
+    # Security check: ensure user owns this booking
+    if booking.user_id != current_user.id:
+        flash('Unauthorized access', 'danger')
+        return redirect(url_for('dashboard'))
+    
+    return render_template('confirmation.html', booking=booking)
+
+@app.route('/profile')
+@login_required
+def profile():
+    bookings = Booking.query.filter_by(user_id=current_user.id).order_by(Booking.booking_date.desc()).all()
+    return render_template('profile.html', bookings=bookings)
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    flash('You have been logged out', 'info')
+    return redirect(url_for('index'))
+
+# API Routes
+@app.route('/api/search_suggestions')
+def search_suggestions():
+    query = request.args.get('q', '')
+    if not query:
+        return jsonify([])
+    
+    url = f"{TMDB_BASE_URL}/search/movie"
+    params = {
+        'api_key': TMDB_API_KEY,
+        'query': query,
+        'language': 'en-US',
+        'page': 1
+    }
+    
+    try:
+        response = requests.get(url, params=params, timeout=API_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+        suggestions = [movie['title'] for movie in data.get('results', [])[:5]]
+        return jsonify(suggestions)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Search suggestions API error: {str(e)}")
+        return jsonify([])
+
+# Error Handlers
+@app.errorhandler(404)
+def error_404(e):
+    """Handle 404 errors."""
+    logger.warning(f"404 error: {request.url}")
+    return render_template('error.html', error_code=404, error_message="Page Not Found"), 404
+
+@app.errorhandler(500)
+def error_500(e):
+    """Handle 500 errors."""
+    logger.error(f"500 error: {str(e)}")
+    return render_template('error.html', error_code=500, error_message="Internal Server Error"), 500
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Handle all unhandled exceptions."""
+    logger.error(f"Unhandled exception: {str(e)}")
+    return render_template('error.html', error_code=500, error_message="Something went wrong"), 500
+
+# Main
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+    app.run(debug=True)

@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - MovieMagic</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <header class="dashboard-header">
+        <div class="container">
+            <div class="header-content">
+                <h1 class="dashboard-title">MovieMagic</h1>
+                <div class="user-actions">
+                    <span class="welcome-text">Welcome, {{ current_user.username }}!</span>
+                    <a href="{{ url_for('profile') }}" class="btn btn-secondary">My Profile</a>
+                    <a href="{{ url_for('logout') }}" class="btn btn-ghost">Logout</a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-content">
+        <div class="container">
+            <!-- Search Section -->
+            <section class="search-section">
+                <div class="search-container">
+                    <div class="search-box">
+                        <i class="fas fa-search search-icon"></i>
+                        <input type="text" id="search-input" class="search-input" placeholder="Search for movies..." value="{{ request.args.get('search', '') }}">
+                        <button id="search-btn" class="search-btn">Search</button>
+                    </div>
+                    
+                    <!-- Search Suggestions -->
+                    <div id="search-suggestions" class="search-suggestions"></div>
+                </div>
+
+                <!-- Search History -->
+                {% if search_history %}
+                <div class="search-history">
+                    <h4>Recent Searches:</h4>
+                    <div class="history-tags">
+                        {% for search in search_history %}
+                        <a href="{{ url_for('dashboard', search=search) }}" class="history-tag">{{ search }}</a>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            </section>
+
+            <!-- Filters Section -->
+            <section class="filters-section">
+                <div class="filters-container">
+                    <div class="filter-group">
+                        <label>Categories:</label>
+                        <div class="filter-buttons">
+                            <a href="{{ url_for('dashboard', search=request.args.get('search', ''), category='all', language=request.args.get('language', 'all')) }}" 
+                               class="filter-btn {% if request.args.get('category', 'all') == 'all' %}active{% endif %}">All</a>
+                            <a href="{{ url_for('dashboard', search=request.args.get('search', ''), category='action', language=request.args.get('language', 'all')) }}" 
+                               class="filter-btn {% if request.args.get('category', 'all') == 'action' %}active{% endif %}">Action</a>
+                            <a href="{{ url_for('dashboard', search=request.args.get('search', ''), category='romance', language=request.args.get('language', 'all')) }}" 
+                               class="filter-btn {% if request.args.get('category', 'all') == 'romance' %}active{% endif %}">Romance</a>
+                            <a href="{{ url_for('dashboard', search=request.args.get('search', ''), category='comedy', language=request.args.get('language', 'all')) }}" 
+                               class="filter-btn {% if request.args.get('category', 'all') == 'comedy' %}active{% endif %}">Comedy</a>
+                            <a href="{{ url_for('dashboard', search=request.args.get('search', ''), category='disney', language=request.args.get('language', 'all')) }}" 
+                               class="filter-btn {% if request.args.get('category', 'all') == 'disney' %}active{% endif %}">Disney</a>
+                            <a href="{{ url_for('dashboard', search=request.args.get('search', ''), category='sci-fi', language=request.args.get('language', 'all')) }}" 
+                               class="filter-btn {% if request.args.get('category', 'all') == 'sci-fi' %}active{% endif %}">Sci-Fi</a>
+                        </div>
+                    </div>
+                    
+                    <div class="filter-group">
+                        <label>Language:</label>
+                        <div class="filter-buttons">
+                            <a href="{{ url_for('dashboard', search=request.args.get('search', ''), category=request.args.get('category', 'all'), language='all') }}" 
+                               class="filter-btn {% if request.args.get('language', 'all') == 'all' %}active{% endif %}">All</a>
+                            <a href="{{ url_for('dashboard', search=request.args.get('search', ''), category=request.args.get('category', 'all'), language='english') }}" 
+                               class="filter-btn {% if request.args.get('language', 'all') == 'english' %}active{% endif %}">English</a>
+                            <a href="{{ url_for('dashboard', search=request.args.get('search', ''), category=request.args.get('category', 'all'), language='non_english') }}" 
+                               class="filter-btn {% if request.args.get('language', 'all') == 'non_english' %}active{% endif %}">Non-English</a>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Movies Grid -->
+            <section class="movies-section">
+                <div class="section-header">
+                    <h2 class="section-title">Popular Movies</h2>
+                    <p class="section-subtitle">Discover the latest and greatest movies</p>
+                </div>
+                
+                {% if movies %}
+                <div class="movies-grid">
+                    {% for movie in movies %}
+                    <div class="movie-card">
+                        <a href="{{ url_for('movie_details', movie_id=movie.id) }}" class="movie-link">
+                            <div class="movie-poster">
+                                {% if movie.poster_path %}
+                                <img src="{{ movie.poster_path }}" alt="{{ movie.title }}" loading="lazy">
+                                {% else %}
+                                <div class="poster-placeholder">
+                                    <i class="fas fa-film"></i>
+                                </div>
+                                {% endif %}
+                                <div class="movie-overlay">
+                                    <span class="view-details">View Details</span>
+                                </div>
+                            </div>
+                            <div class="movie-info">
+                                <h3 class="movie-title">{{ movie.title }}</h3>
+                                <div class="movie-meta">
+                                    <span class="movie-rating">
+                                        <i class="fas fa-star"></i> {{ movie.vote_average }}/10
+                                    </span>
+                                    <span class="movie-year">{{ movie.release_date[:4] if movie.release_date else 'N/A' }}</span>
+                                </div>
+                                <p class="movie-overview">{{ movie.overview[:150] }}{% if movie.overview|length > 150 %}...{% endif %}</p>
+                            </div>
+                        </a>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="no-movies">
+                    <i class="fas fa-film"></i>
+                    <h3>No movies found</h3>
+                    <p>Try adjusting your search criteria or filters</p>
+                </div>
+                {% endif %}
+            </section>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2024 MovieMagic. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+    <script>
+        // Search functionality
+        const searchInput = document.getElementById('search-input');
+        const searchSuggestions = document.getElementById('search-suggestions');
+        const searchBtn = document.getElementById('search-btn');
+
+        searchInput.addEventListener('input', debounce(async function() {
+            const query = this.value.trim();
+            if (query.length > 2) {
+                try {
+                    const response = await fetch(`/api/search_suggestions?q=${encodeURIComponent(query)}`);
+                    const suggestions = await response.json();
+                    
+                    if (suggestions.length > 0) {
+                        searchSuggestions.innerHTML = suggestions.map(suggestion => 
+                            `<div class="suggestion-item" onclick="selectSuggestion('${suggestion}')">${suggestion}</div>`
+                        ).join('');
+                        searchSuggestions.style.display = 'block';
+                    } else {
+                        searchSuggestions.style.display = 'none';
+                    }
+                } catch (error) {
+                    console.error('Error fetching suggestions:', error);
+                }
+            } else {
+                searchSuggestions.style.display = 'none';
+            }
+        }, 300));
+
+        function selectSuggestion(suggestion) {
+            searchInput.value = suggestion;
+            searchSuggestions.style.display = 'none';
+            performSearch();
+        }
+
+        function performSearch() {
+            const query = searchInput.value.trim();
+            if (query) {
+                window.location.href = `{{ url_for('dashboard') }}?search=${encodeURIComponent(query)}`;
+            }
+        }
+
+        searchBtn.addEventListener('click', performSearch);
+        searchInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+
+        // Close suggestions when clicking outside
+        document.addEventListener('click', function(e) {
+            if (!searchInput.contains(e.target) && !searchSuggestions.contains(e.target)) {
+                searchSuggestions.style.display = 'none';
+            }
+        });
+
+        function debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        }
+    </script>
+</body>
+</html>
